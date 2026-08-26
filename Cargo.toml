@@ -1,0 +1,26 @@
+[package]
+name = "addis-crm-frontend"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+leptos = { version = "0.8.0", features = ["csr"] }
+leptos_router = { version = "0.8.0" }
+console_log = "1"
+log = "0.4"
+console_error_panic_hook = "0.1"
+serde = { version = "1", features = ["derive"] }
+wasm-bindgen-futures = "0.4"
+gloo-timers = { version = "0.3", features = ["futures"] }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Blob", "BlobPropertyBag", "Url", "HtmlAnchorElement", "HtmlInputElement",
+    "FileList", "File", "Window", "Document", "Element",
+    "ScrollToOptions", "ScrollBehavior",
+] }
+
+[profile.release]
+opt-level = 'z'
+lto = true
+codegen-units = 1
