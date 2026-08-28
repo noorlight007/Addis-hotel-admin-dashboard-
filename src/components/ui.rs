@@ -19,17 +19,16 @@ pub fn pluralize(n: usize, noun: &str) -> String {
 #[component]
 pub fn PageHeader(
     #[prop(into)] title: String,
-    #[prop(into, default = String::new())] subtitle: String,
+    #[prop(into, default = Signal::derive(String::new))] subtitle: Signal<String>,
     #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView {
-    // These props are fixed for the lifetime of the page, so plain Rust
-    // conditionals are used rather than reactive `Show` blocks.
-    let subtitle = (!subtitle.is_empty()).then_some(subtitle);
     view! {
         <div class="mb-5 flex animate-fade-up flex-wrap items-end justify-between gap-3">
             <div class="min-w-0">
                 <h1 class="text-xl font-bold tracking-tight text-slate-900">{title}</h1>
-                {subtitle.map(|s| view! { <p class="mt-0.5 text-sm text-slate-500">{s}</p> })}
+                <Show when=move || !subtitle.get().is_empty()>
+                    <p class="mt-0.5 text-sm text-slate-500">{move || subtitle.get()}</p>
+                </Show>
             </div>
             {children.map(|c| view! { <div class="flex shrink-0 flex-wrap items-center gap-2">{c()}</div> })}
         </div>
@@ -40,18 +39,19 @@ pub fn PageHeader(
 #[component]
 pub fn Card(
     #[prop(into, default = String::new())] title: String,
-    #[prop(into, default = String::new())] hint: String,
+    #[prop(into, default = Signal::derive(String::new))] hint: Signal<String>,
     #[prop(default = "")] class: &'static str,
     #[prop(optional)] action: Option<Children>,
     children: Children,
 ) -> impl IntoView {
-    let hint = (!hint.is_empty()).then_some(hint);
     let header = (!title.is_empty()).then(|| {
         view! {
             <div class="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-3.5">
                 <div class="min-w-0">
                     <h2 class="text-sm font-bold text-slate-900">{title}</h2>
-                    {hint.map(|h| view! { <p class="mt-0.5 text-xs text-slate-400">{h}</p> })}
+                    <Show when=move || !hint.get().is_empty()>
+                        <p class="mt-0.5 text-xs text-slate-400">{move || hint.get()}</p>
+                    </Show>
                 </div>
                 {action.map(|a| view! { <div class="flex shrink-0 items-center gap-2">{a()}</div> })}
             </div>

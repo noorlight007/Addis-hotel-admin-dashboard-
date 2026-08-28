@@ -3,14 +3,33 @@ use crate::pages::*;
 use leptos::prelude::*;
 use leptos_router::{
     components::{Route, Router, Routes},
-    hooks::use_location,
+    hooks::{use_location, use_navigate},
     path,
 };
 
 /// Chrome shared by every authenticated page.
+///
+/// Doubles as the auth gate: without a stored access token the dashboard is not
+/// rendered at all and the browser is sent to `/login`. The API rejects these
+/// requests anyway — this just avoids flashing an empty dashboard first.
 #[component]
-fn Shell(children: Children) -> impl IntoView {
+fn Shell(children: ChildrenFn) -> impl IntoView {
+    let navigate = use_navigate();
+    let authed = RwSignal::new(crate::api::session::is_authenticated());
+
+    Effect::new(move |_| {
+        if !crate::api::session::is_authenticated() {
+            authed.set(false);
+            navigate("/login", Default::default());
+        }
+    });
+
     view! {
+        <Show when=move || authed.get() fallback=|| view! {
+            <div class="flex min-h-screen items-center justify-center bg-slate-50 text-sm text-slate-400">
+                "Redirecting to sign in…"
+            </div>
+        }>
         <div class="flex min-h-screen bg-slate-50">
             <Sidebar/>
             <div class="flex min-w-0 flex-1 flex-col">
@@ -19,6 +38,7 @@ fn Shell(children: Children) -> impl IntoView {
                 <Footer/>
             </div>
         </div>
+        </Show>
     }
 }
 

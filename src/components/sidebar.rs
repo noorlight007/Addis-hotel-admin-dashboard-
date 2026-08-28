@@ -1,3 +1,4 @@
+use crate::api;
 use crate::components::Icon;
 use leptos::prelude::*;
 use leptos_router::components::A;
@@ -23,11 +24,23 @@ pub fn use_layout() -> LayoutCtx {
     expect_context::<LayoutCtx>()
 }
 
+/// Which live counter a nav item shows in its badge, if any.
+#[derive(Clone, Copy, PartialEq)]
+enum Badge {
+    None,
+    /// Reservations awaiting a decision.
+    PendingReservations,
+    /// Completed stays still carrying a balance.
+    Outstanding,
+    /// Unread notifications.
+    Unread,
+}
+
 struct NavItem {
     label: &'static str,
     href: &'static str,
     icon: &'static str,
-    badge: Option<u32>,
+    badge: Badge,
 }
 
 struct NavGroup {
@@ -39,39 +52,39 @@ const NAV: &[NavGroup] = &[
     NavGroup {
         heading: "Overview",
         items: &[
-            NavItem { label: "Dashboard", href: "/", icon: "home", badge: None },
-            NavItem { label: "Analytics", href: "/analytics", icon: "bar-chart", badge: None },
+            NavItem { label: "Dashboard", href: "/", icon: "home", badge: Badge::None },
+            NavItem { label: "Analytics", href: "/analytics", icon: "bar-chart", badge: Badge::None },
         ],
     },
     NavGroup {
         heading: "Operations",
         items: &[
-            NavItem { label: "Reservations", href: "/reservations", icon: "calendar-check", badge: Some(7) },
-            NavItem { label: "Calendar", href: "/calendar", icon: "calendar", badge: None },
-            NavItem { label: "Rooms", href: "/rooms", icon: "bed", badge: None },
-            NavItem { label: "Rates", href: "/rates", icon: "tag", badge: None },
-            NavItem { label: "Guests", href: "/guests", icon: "users", badge: None },
+            NavItem { label: "Reservations", href: "/reservations", icon: "calendar-check", badge: Badge::PendingReservations },
+            NavItem { label: "Calendar", href: "/calendar", icon: "calendar", badge: Badge::None },
+            NavItem { label: "Rooms", href: "/rooms", icon: "bed", badge: Badge::None },
+            NavItem { label: "Rates", href: "/rates", icon: "tag", badge: Badge::None },
+            NavItem { label: "Guests", href: "/guests", icon: "users", badge: Badge::None },
         ],
     },
     NavGroup {
         heading: "Revenue",
         items: &[
-            NavItem { label: "Payments", href: "/payments", icon: "wallet", badge: Some(2) },
+            NavItem { label: "Payments", href: "/payments", icon: "wallet", badge: Badge::Outstanding },
         ],
     },
     NavGroup {
         heading: "Engagement",
         items: &[
-            NavItem { label: "Messages", href: "/messages", icon: "mail", badge: Some(3) },
-            NavItem { label: "Reviews", href: "/reviews", icon: "star", badge: None },
+            NavItem { label: "Messages", href: "/messages", icon: "mail", badge: Badge::Unread },
+            NavItem { label: "Reviews", href: "/reviews", icon: "star", badge: Badge::None },
         ],
     },
     NavGroup {
         heading: "Administration",
         items: &[
-            NavItem { label: "Hotel Profile", href: "/profile", icon: "building", badge: None },
-            NavItem { label: "Staff & Roles", href: "/staff", icon: "user-plus", badge: None },
-            NavItem { label: "Settings", href: "/settings", icon: "settings", badge: None },
+            NavItem { label: "Hotel Profile", href: "/profile", icon: "building", badge: Badge::None },
+            NavItem { label: "Staff & Roles", href: "/staff", icon: "user-plus", badge: Badge::None },
+            NavItem { label: "Settings", href: "/settings", icon: "settings", badge: Badge::None },
         ],
     },
 ];
@@ -80,6 +93,66 @@ const NAV: &[NavGroup] = &[
 pub fn Sidebar() -> impl IntoView {
     let layout = use_layout();
     let location = use_location();
+    let logout_nav = leptos_router::hooks::use_navigate();
+
+    // The property header and the nav badges come from the API. They are read
+    // once per mount rather than per navigation — the numbers move slowly and
+    // each screen refreshes its own data anyway.
+    let hotel = LocalResource::new(|| async move { api::dashboard_summary(None).await });
+    let unread = LocalResource::new(|| async move { api::unread_counts().await });
+    let pending = LocalResource::new(|| async move {
+        api::list_reservations(&api::ReservationQuery {
+            status_tab: "new".into(),
+            page_size: 100,
+            ..Default::default()
+        })
+        .await
+    });
+    let ledger = LocalResource::new(|| async move { api::payments_ledger("").await });
+
+    let badge_count = move |kind: Badge| -> u32 {
+        match kind {
+            Badge::None => 0,
+            Badge::Unread => unread.get().and_then(Result::ok).map(|c| c.unread_count).unwrap_or(0),
+            Badge::PendingReservations => pending
+                .get()
+                .and_then(Result::ok)
+                .map(|p| p.meta.count)
+                .unwrap_or(0),
+            Badge::Outstanding => ledger
+                .get()
+                .and_then(Result::ok)
+                .map(|l| l.transactions.iter().filter(|t| t.outstanding > 0.0).count() as u32)
+                .unwrap_or(0),
+        }
+    };
+
+    let hotel_name = move || {
+        hotel
+            .get()
+            .and_then(Result::ok)
+            .map(|s| s.hotel.name)
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "Your property".into())
+    };
+    let hotel_location = move || {
+        hotel
+            .get()
+            .and_then(Result::ok)
+            .map(|s| s.hotel.location())
+            .filter(|l| !l.is_empty())
+            .unwrap_or_else(|| "No address set".into())
+    };
+    let hotel_logo = move || {
+        hotel
+            .get()
+            .and_then(Result::ok)
+            .and_then(|s| s.hotel.logo)
+            .filter(|l| l.starts_with("http"))
+    };
+    let is_verified = move || {
+        hotel.get().and_then(Result::ok).map(|s| s.hotel.is_verified).unwrap_or(false)
+    };
 
     // Any navigation closes the mobile drawer.
     Effect::new(move |_| {
@@ -106,22 +179,38 @@ pub fn Sidebar() -> impl IntoView {
                 "flex items-center gap-3 border-b border-white/5 transition-all duration-300 {}",
                 if layout.collapsed.get() { "justify-center p-3" } else { "p-4" }
             )>
-                <img
-                    src="https://images.unsplash.com/photo-1566073771259-6a8506099945?q=80&w=200"
-                    alt="Golden Tulip Addis Ababa"
-                    class=move || format!(
-                        "shrink-0 rounded-xl object-cover shadow-lg ring-1 ring-white/10 transition-all duration-300 hover:scale-105 {}",
-                        if layout.collapsed.get() { "h-11 w-11" } else { "h-12 w-12" }
-                    )
-                />
+                {move || match hotel_logo() {
+                    Some(url) => view! {
+                        <img
+                            src=url
+                            alt=hotel_name()
+                            class=move || format!(
+                                "shrink-0 rounded-xl object-cover shadow-lg ring-1 ring-white/10 transition-all duration-300 hover:scale-105 {}",
+                                if layout.collapsed.get() { "h-11 w-11" } else { "h-12 w-12" }
+                            )
+                        />
+                    }.into_any(),
+                    // No logo uploaded yet — fall back to a monogram rather than
+                    // a stock photo of somebody else's hotel.
+                    None => view! {
+                        <span class=move || format!(
+                            "flex shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 font-bold text-white shadow-lg ring-1 ring-white/10 {}",
+                            if layout.collapsed.get() { "h-11 w-11 text-sm" } else { "h-12 w-12 text-base" }
+                        )>
+                            {hotel_name().chars().next().unwrap_or('H').to_uppercase().to_string()}
+                        </span>
+                    }.into_any(),
+                }}
                 <Show when=move || !layout.collapsed.get()>
                     <div class="min-w-0 animate-fade-in">
-                        <p class="truncate text-sm font-bold text-white">"Golden Tulip Addis Ababa"</p>
-                        <p class="truncate text-2xs text-slate-400">"Bole, Addis Ababa"</p>
-                        <span class="mt-1 inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-2xs font-semibold text-emerald-400 ring-1 ring-emerald-500/20">
-                            <Icon name="check-circle" class="h-3 w-3" />
-                            "Verified"
-                        </span>
+                        <p class="truncate text-sm font-bold text-white">{hotel_name}</p>
+                        <p class="truncate text-2xs text-slate-400">{hotel_location}</p>
+                        <Show when=move || is_verified()>
+                            <span class="mt-1 inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-2xs font-semibold text-emerald-400 ring-1 ring-emerald-500/20">
+                                <Icon name="check-circle" class="h-3 w-3" />
+                                "Verified"
+                            </span>
+                        </Show>
                     </div>
                 </Show>
                 <button
@@ -173,7 +262,7 @@ pub fn Sidebar() -> impl IntoView {
                                     <span class="flex min-w-0 items-center gap-3">
                                         <span class="relative shrink-0">
                                             <Icon name=item.icon class="h-4 w-4 transition-transform duration-200 group-hover:scale-110" />
-                                            <Show when=move || (layout.collapsed.get() && item.badge.is_some())>
+                                            <Show when=move || (layout.collapsed.get() && badge_count(item.badge) > 0)>
                                                 <span class="absolute -right-1.5 -top-1.5 h-2 w-2 rounded-full bg-red-500 ring-2 ring-slate-900"></span>
                                             </Show>
                                         </span>
@@ -182,10 +271,10 @@ pub fn Sidebar() -> impl IntoView {
                                         </Show>
                                     </span>
 
-                                    <Show when=move || !layout.collapsed.get()>
-                                        {item.badge.map(|b| view! {
-                                            <span class="shrink-0 rounded-full bg-red-500 px-1.5 py-0.5 text-2xs font-bold text-white">{b}</span>
-                                        })}
+                                    <Show when=move || (!layout.collapsed.get() && badge_count(item.badge) > 0)>
+                                        <span class="shrink-0 rounded-full bg-red-500 px-1.5 py-0.5 text-2xs font-bold text-white">
+                                            {move || badge_count(item.badge)}
+                                        </span>
                                     </Show>
                                 </A>
                             }
@@ -212,10 +301,15 @@ pub fn Sidebar() -> impl IntoView {
                     </Show>
                 </button>
 
-                <A
-                    href="/login"
-                    attr:title="Logout"
-                    attr:class=move || format!(
+                <button
+                    title="Logout"
+                    on:click=move |_| {
+                        // Drop the tokens before navigating, or the guard on
+                        // /login bounces straight back into the dashboard.
+                        crate::api::logout();
+                        logout_nav("/login", Default::default());
+                    }
+                    class=move || format!(
                         "flex w-full items-center gap-3 rounded-lg py-2.5 text-sm font-medium text-slate-300 transition-colors hover:bg-red-500/10 hover:text-red-300 {}",
                         if layout.collapsed.get() { "justify-center px-2" } else { "px-2.5" }
                     )
@@ -224,7 +318,7 @@ pub fn Sidebar() -> impl IntoView {
                     <Show when=move || !layout.collapsed.get()>
                         <span>"Logout"</span>
                     </Show>
-                </A>
+                </button>
             </div>
         </aside>
     }

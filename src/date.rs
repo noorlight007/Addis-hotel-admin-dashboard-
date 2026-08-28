@@ -105,3 +105,46 @@ pub fn format_short(date: Date) -> String {
 pub fn format_month(year: i32, month: u32) -> String {
     format!("{} {year}", MONTH_NAMES[(month - 1) as usize])
 }
+
+/// Inverse of [`days_from_epoch`] (Howard Hinnant's `civil_from_days`).
+pub fn date_from_epoch(z: i64) -> Date {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y as i32, m as u32, d as u32)
+}
+
+/// Moves a date by whole days, rolling months and years over.
+pub fn add_days(date: Date, delta: i64) -> Date {
+    date_from_epoch(days_from_epoch(date) + delta)
+}
+
+/// `"2026-08-27"` — the format every API date field uses.
+pub fn to_iso((y, m, d): Date) -> String {
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Parses `"2026-08-27"`, tolerating a trailing time component.
+pub fn parse_iso(s: &str) -> Option<Date> {
+    let mut it = s.split('T').next()?.split('-');
+    Some((
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+    ))
+}
+
+/// Whole nights between two ISO dates, or `0` when either is unparseable.
+pub fn nights_between(check_in: &str, check_out: &str) -> i64 {
+    match (parse_iso(check_in), parse_iso(check_out)) {
+        (Some(a), Some(b)) => (days_from_epoch(b) - days_from_epoch(a)).max(0),
+        _ => 0,
+    }
+}

@@ -41,7 +41,7 @@ fn fmt_path(pts: &[(f64, f64)]) -> String {
 #[component]
 pub fn LineChart(
     values: Vec<u32>,
-    labels: Vec<&'static str>,
+    labels: Vec<String>,
     #[prop(default = "#2563eb")] stroke: &'static str,
     #[prop(default = "")] value_prefix: &'static str,
     #[prop(default = 200.0)] height: f64,
@@ -142,7 +142,7 @@ pub fn LineChart(
                     let i = hovered.get().unwrap_or(0);
                     let (x, y) = stored_pts.with_value(|p| p.get(i).copied().unwrap_or((0.0, 0.0)));
                     let value = stored_values.with_value(|v| v.get(i).copied().unwrap_or(0));
-                    let label = stored_labels.with_value(|l| l.get(i).copied().unwrap_or(""));
+                    let label = stored_labels.with_value(|l: &Vec<String>| l.get(i).cloned().unwrap_or_default());
                     view! {
                         <div
                             class="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full animate-scale-in rounded-lg bg-slate-900 px-2.5 py-1.5 text-center text-xs text-white shadow-lg"
@@ -170,7 +170,7 @@ pub fn LineChart(
 #[component]
 pub fn BarChart(
     values: Vec<u32>,
-    labels: Vec<&'static str>,
+    labels: Vec<String>,
     #[prop(default = "bg-blue-600")] bar_class: &'static str,
     #[prop(default = "")] value_prefix: &'static str,
 ) -> impl IntoView {
@@ -180,7 +180,7 @@ pub fn BarChart(
         <div class="flex h-48 items-end gap-2">
             {values.into_iter().enumerate().map(|(i, v)| {
                 let pct = (v * 100 / max).max(2);
-                let label = labels.get(i).copied().unwrap_or("");
+                let label = labels.get(i).cloned().unwrap_or_default();
                 let delay = format!("animation-delay: {}ms; height: {}%", i * 60, pct);
                 view! {
                     <div class="group flex flex-1 flex-col items-center justify-end gap-1.5">
@@ -205,7 +205,7 @@ pub fn BarChart(
 #[component]
 pub fn DonutChart(
     /// `(label, value, tailwind-ish hex colour)`
-    slices: Vec<(&'static str, u32, &'static str)>,
+    slices: Vec<(String, u32, &'static str)>,
     #[prop(default = "Total")] centre_label: &'static str,
 ) -> impl IntoView {
     let total: u32 = slices.iter().map(|(_, v, _)| *v).sum();
@@ -217,15 +217,15 @@ pub fn DonutChart(
 
     // Pre-compute each arc's dash length and rotation offset.
     let mut offset = 0.0f64;
-    let arcs: Vec<(usize, &'static str, u32, &'static str, f64, f64)> = slices
+    let arcs: Vec<(usize, &'static str, f64, f64)> = slices
         .iter()
         .enumerate()
-        .map(|(i, (label, value, color))| {
+        .map(|(i, (_, value, color))| {
             let fraction = *value as f64 / total_safe;
             let dash = fraction * circumference;
             let rotation = offset / circumference * 360.0 - 90.0;
             offset += dash;
-            (i, *label, *value, *color, dash, rotation)
+            (i, *color, dash, rotation)
         })
         .collect();
 
@@ -234,7 +234,7 @@ pub fn DonutChart(
             <div class="relative h-40 w-40 shrink-0">
                 <svg viewBox="0 0 140 140" class="h-full w-full">
                     <circle cx="70" cy="70" r=radius fill="none" stroke="#f1f5f9" stroke-width="18" />
-                    {arcs.iter().map(|(i, _, _, color, dash, rotation)| {
+                    {arcs.iter().map(|(i, color, dash, rotation)| {
                         let i = *i;
                         let dash = *dash;
                         let rotation = *rotation;
@@ -260,7 +260,10 @@ pub fn DonutChart(
                 <div class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
                     {move || match hovered.get() {
                         Some(i) => {
-                            let (label, value, _) = stored_slices.with_value(|s| s.get(i).copied().unwrap_or(("", 0, "")));
+                            let (label, value) = stored_slices
+                                .with_value(|s: &Vec<(String, u32, &'static str)>| {
+                                    s.get(i).map(|(l, v, _)| (l.clone(), *v)).unwrap_or_default()
+                                });
                             view! {
                                 <>
                                     <span class="animate-pop-in text-2xl font-extrabold text-slate-900">{value}</span>
@@ -271,7 +274,7 @@ pub fn DonutChart(
                         None => view! {
                             <>
                                 <span class="text-2xl font-extrabold text-slate-900">{total}</span>
-                                <span class="text-2xs text-slate-500">{centre_label}</span>
+                                <span class="text-2xs text-slate-500">{centre_label.to_string()}</span>
                             </>
                         },
                     }}
@@ -280,7 +283,7 @@ pub fn DonutChart(
 
             <ul class="flex w-full flex-col gap-1.5 sm:w-auto">
                 {slices.iter().enumerate().map(|(i, (label, value, color))| {
-                    let label = *label;
+                    let label = label.clone();
                     let value = *value;
                     let color = *color;
                     let pct = value * 100 / total.max(1);
@@ -328,17 +331,29 @@ pub fn ProgressBar(
 
 /// Compact "up/down since last period" pill.
 #[component]
-pub fn TrendPill(delta: f32, #[prop(default = "vs last week")] period: &'static str) -> impl IntoView {
-    let up = delta >= 0.0;
+pub fn TrendPill(
+    #[prop(into)] delta: Signal<f32>,
+    #[prop(default = "vs last week")] period: &'static str,
+) -> impl IntoView {
+    let up = move || delta.get() >= 0.0;
     view! {
-        <span class=format!(
+        <span class=move || format!(
             "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-2xs font-bold {}",
-            if up { "bg-emerald-50 text-emerald-700" } else { "bg-red-50 text-red-700" }
+            if up() { "bg-emerald-50 text-emerald-700" } else { "bg-red-50 text-red-700" }
         )>
-            <span class=if up { "" } else { "rotate-90" }>
+            <span class=move || if up() { "" } else { "rotate-90" }>
                 <Icon name="trending-up" class="h-3 w-3" />
             </span>
-            {format!("{}{:.1}%", if up { "+" } else { "" }, delta)}
+            {move || {
+                let d = delta.get();
+                // Growing off a near-zero baseline produces percentages in the
+                // hundreds, which reads as noise. Past 3x, show the multiple.
+                if d.abs() >= 200.0 {
+                    format!("{}{:.0}x", if up() { "+" } else { "-" }, (1.0 + d.abs() / 100.0))
+                } else {
+                    format!("{}{:.1}%", if up() { "+" } else { "" }, d)
+                }
+            }}
             <span class="font-normal opacity-70">{period}</span>
         </span>
     }

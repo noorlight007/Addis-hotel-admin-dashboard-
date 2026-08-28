@@ -1,3 +1,4 @@
+use crate::api;
 use crate::components::Icon;
 use leptos::prelude::*;
 use leptos_router::components::A;
@@ -14,14 +15,21 @@ pub fn SignupPage() -> impl IntoView {
     let confirm_password = RwSignal::new(String::new());
     let agree = RwSignal::new(false);
     let error = RwSignal::new(Option::<String>::None);
+    let busy = RwSignal::new(false);
 
     let on_submit = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default();
-        if full_name.get().trim().is_empty() || email.get().trim().is_empty() || password.get().is_empty() {
+        if busy.get() {
+            return;
+        }
+        let name = full_name.get().trim().to_string();
+        let mail = email.get().trim().to_string();
+        let secret = password.get();
+        if name.is_empty() || mail.is_empty() || secret.is_empty() {
             error.set(Some("Please fill in your name, email and password.".to_string()));
             return;
         }
-        if password.get() != confirm_password.get() {
+        if secret != confirm_password.get() {
             error.set(Some("Passwords do not match.".to_string()));
             return;
         }
@@ -30,7 +38,45 @@ pub fn SignupPage() -> impl IntoView {
             return;
         }
         error.set(None);
-        navigate("/", Default::default());
+        busy.set(true);
+
+        // The API takes given/family names separately; split on the first space
+        // and let everything after it be the surname.
+        let (first, last) = match name.split_once(' ') {
+            Some((f, l)) => (f.to_string(), l.trim().to_string()),
+            None => (name.clone(), String::new()),
+        };
+        let payload = api::RegisterPayload {
+            email: mail.clone(),
+            password: secret.clone(),
+            first_name: first,
+            last_name: last,
+            phone: phone.get().trim().to_string(),
+            // A hotel signing up needs to administer its own organization.
+            user_type: "organization_admin".to_string(),
+        };
+
+        let navigate = navigate.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            match api::register(&payload).await {
+                Ok(_) => {
+                    // The register endpoint returns a token pair, so the account
+                    // is already signed in. A fresh admin has no hotel yet, so
+                    // land them on the profile page to create one.
+                    busy.set(false);
+                    navigate("/profile", Default::default());
+                }
+                Err(e) => {
+                    // Surface the field the API objected to, when it names one.
+                    let detail = ["email", "password", "phone", "first_name"]
+                        .into_iter()
+                        .find_map(|f| e.field(f).map(|m| format!("{f}: {m}")))
+                        .unwrap_or_else(|| e.message.clone());
+                    error.set(Some(detail));
+                    busy.set(false);
+                }
+            }
+        });
     };
 
     view! {
@@ -146,10 +192,13 @@ pub fn SignupPage() -> impl IntoView {
 
                     <button
                         type="submit"
-                        class="mt-1 flex items-center justify-center gap-2 rounded-lg bg-blue-700 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-700/30 transition-all duration-200 hover:bg-blue-800 hover:shadow-lg active:scale-[0.98]"
+                        disabled=move || busy.get()
+                        class="mt-1 flex items-center justify-center gap-2 rounded-lg bg-blue-700 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-700/30 transition-all duration-200 hover:bg-blue-800 hover:shadow-lg active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                        "Create Account"
-                        <Icon name="chevron-right" class="h-4 w-4" />
+                        {move || if busy.get() { "Creating account…" } else { "Create Account" }}
+                        <Show when=move || !busy.get()>
+                            <Icon name="chevron-right" class="h-4 w-4" />
+                        </Show>
                     </button>
                 </form>
 

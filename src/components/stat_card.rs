@@ -36,7 +36,7 @@ pub fn StatCard(
     icon: &'static str,
     label: &'static str,
     #[prop(into)] value: Signal<String>,
-    hint: &'static str,
+    #[prop(into, default = Signal::derive(String::new))] hint: Signal<String>,
     #[prop(default = "text-blue-600 bg-blue-50")] accent: &'static str,
 ) -> impl IntoView {
     let display = RwSignal::new(0i64);
@@ -87,7 +87,7 @@ pub fn StatCard(
                     static_text.get()
                 }}
             </p>
-            <p class="text-xs text-slate-400">{hint}</p>
+            <p class="text-xs text-slate-400">{move || hint.get()}</p>
         </div>
     }
 }

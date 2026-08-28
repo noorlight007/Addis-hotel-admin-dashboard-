@@ -1,3 +1,4 @@
+use crate::api;
 use crate::components::Icon;
 use leptos::prelude::*;
 use leptos_router::components::A;
@@ -11,15 +12,55 @@ pub fn LoginPage() -> impl IntoView {
     let remember = RwSignal::new(true);
     let show_password = RwSignal::new(false);
     let error = RwSignal::new(Option::<String>::None);
+    let busy = RwSignal::new(false);
 
+    // Already signed in? Skip the form.
+    Effect::new(move |_| {
+        if api::session::is_authenticated() {
+            navigate("/", Default::default());
+        }
+    });
+
+    let submit_navigate = use_navigate();
     let on_submit = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default();
-        if email.get().trim().is_empty() || password.get().is_empty() {
+        if busy.get() {
+            return;
+        }
+        let identifier = email.get().trim().to_string();
+        let secret = password.get();
+        if identifier.is_empty() || secret.is_empty() {
             error.set(Some("Please enter your email/phone and password.".to_string()));
             return;
         }
         error.set(None);
-        navigate("/", Default::default());
+        busy.set(true);
+
+        let navigate = submit_navigate.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            match api::login(&identifier, &secret).await {
+                Ok(_) => {
+                    // "Remember me" off means the session should not outlive the
+                    // tab, so drop the refresh token and keep only the access one.
+                    if !remember.get_untracked() {
+                        if let Some(access) = api::session::access_token() {
+                            api::session::clear();
+                            api::session::set_tokens(&access, None);
+                        }
+                    }
+                    busy.set(false);
+                    navigate("/", Default::default());
+                }
+                Err(e) => {
+                    error.set(Some(if e.is_unauthorized() {
+                        "Those credentials were not recognised.".to_string()
+                    } else {
+                        e.message.clone()
+                    }));
+                    busy.set(false);
+                }
+            }
+        });
     };
 
     view! {
@@ -88,10 +129,13 @@ pub fn LoginPage() -> impl IntoView {
 
                     <button
                         type="submit"
-                        class="mt-1 flex items-center justify-center gap-2 rounded-lg bg-blue-700 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-700/30 transition-all duration-200 hover:bg-blue-800 hover:shadow-lg active:scale-[0.98]"
+                        disabled=move || busy.get()
+                        class="mt-1 flex items-center justify-center gap-2 rounded-lg bg-blue-700 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-700/30 transition-all duration-200 hover:bg-blue-800 hover:shadow-lg active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                        "Sign In"
-                        <Icon name="chevron-right" class="h-4 w-4" />
+                        {move || if busy.get() { "Signing in…" } else { "Sign In" }}
+                        <Show when=move || !busy.get()>
+                            <Icon name="chevron-right" class="h-4 w-4" />
+                        </Show>
                     </button>
                 </form>
 

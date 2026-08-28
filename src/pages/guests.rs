@@ -1,51 +1,72 @@
-use crate::components::{Icon, Modal, StatCard};
-use crate::data::{Guest, GUESTS};
+//! Guest records, backed by `/guests/` and `/guests/metrics/`.
+//!
+//! Guests are normally created by bookings, but the front desk can also enter a
+//! walk-in directly. The tabs map to the API's `status_tab` filter and search is
+//! applied server-side. The VIP star and the CSV export are live calls.
+
+use crate::api;
+use crate::components::{use_toast, Icon, Modal, StatCard};
 use crate::pages::dashboard::status_pill;
 use leptos::prelude::*;
 use leptos_router::components::A;
-use std::sync::atomic::{AtomicU32, Ordering};
 
-static NEXT_GUEST_REF: AtomicU32 = AtomicU32::new(251);
-
-fn initials_of(name: &str) -> String {
-    name.split_whitespace()
-        .filter_map(|w| w.chars().next())
-        .take(2)
-        .collect::<String>()
-        .to_uppercase()
-}
+const TABS: &[&str] = &["All", "In House", "Arriving Today", "Checking Out", "VIP"];
 
 #[component]
 pub fn GuestsPage() -> impl IntoView {
-    let guests = RwSignal::new(GUESTS.to_vec());
-    let modal_open = RwSignal::new(false);
+    let toast = use_toast();
     let filter = RwSignal::new("All");
     let search = RwSignal::new(String::new());
+    let refresh = RwSignal::new(0u32);
+    let add_open = RwSignal::new(false);
+    let exporting = RwSignal::new(false);
 
-    let in_house = move || guests.get().iter().filter(|g| g.status == "In House").count();
-    let arriving = move || guests.get().iter().filter(|g| g.status == "Arriving Today").count();
-    let checking_out = move || guests.get().iter().filter(|g| g.status == "Checking Out").count();
-    let vip = move || guests.get().iter().filter(|g| g.vip).count();
+    let guests = LocalResource::new(move || {
+        let tab = filter.get();
+        let q = search.get();
+        let _ = refresh.get();
+        async move { api::list_guests(tab, &q).await }
+    });
+    let metrics = LocalResource::new(move || {
+        let _ = refresh.get();
+        async move { api::guest_metrics().await }
+    });
 
-    let visible_guests = move || {
-        let q = search.get().to_lowercase();
-        guests
+    let metric = move |pick: fn(&api::GuestMetrics) -> u32| {
+        metrics
             .get()
-            .into_iter()
-            .filter(|g| match filter.get() {
-                "In House" => g.status == "In House",
-                "Arriving Today" => g.status == "Arriving Today",
-                "Checking Out" => g.status == "Checking Out",
-                "VIP" => g.vip,
-                _ => true,
-            })
-            .filter(|g| {
-                q.is_empty()
-                    || g.name.to_lowercase().contains(&q)
-                    || g.booking_ref.to_lowercase().contains(&q)
-                    || g.contact.contains(&q)
-            })
-            .collect::<Vec<_>>()
+            .and_then(Result::ok)
+            .map(|m| pick(&m).to_string())
+            .unwrap_or_else(|| "—".into())
+    };
+
+    let export = move |_| {
+        if exporting.get() {
+            return;
+        }
+        exporting.set(true);
+        wasm_bindgen_futures::spawn_local(async move {
+            match api::export_guests().await {
+                Ok(()) => toast.success("Export ready", "guests.csv has been downloaded."),
+                Err(e) => toast.error("Export failed", e.detail()),
+            }
+            exporting.set(false);
+        });
+    };
+
+    let toggle_vip = move |id: i64, next: bool| {
+        wasm_bindgen_futures::spawn_local(async move {
+            match api::toggle_guest_vip(id, next).await {
+                Ok(()) => {
+                    refresh.update(|n| *n += 1);
+                    toast.success(
+                        if next { "Marked VIP" } else { "VIP removed" },
+                        "The guest record has been updated.",
+                    );
+                }
+                Err(e) => toast.error("Could not update guest", e.detail()),
+            }
+        });
     };
 
     view! {
@@ -53,41 +74,38 @@ pub fn GuestsPage() -> impl IntoView {
             <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <div>
                     <h1 class="text-xl font-bold text-slate-900">"Guests"</h1>
-                    <p class="text-sm text-slate-500">"Manage guest records, stay details, and communication."</p>
+                    <p class="text-sm text-slate-500">"Guest records, stay details, and preferences."</p>
                 </div>
                 <div class="flex gap-2">
-                    <button class="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium transition-colors hover:bg-slate-50">
+                    <button
+                        on:click=export
+                        disabled=move || exporting.get()
+                        class="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium transition-colors hover:bg-slate-50 disabled:opacity-60"
+                    >
                         <Icon name="download" class="h-4 w-4" />
-                        "Export Guests"
+                        {move || if exporting.get() { "Exporting…" } else { "Export Guests" }}
                     </button>
                     <button
-                        on:click=move |_| modal_open.set(true)
-                        class="flex items-center gap-1.5 rounded-lg bg-blue-700 transition-all duration-200 hover:bg-blue-800 hover:shadow-md active:scale-[0.98] px-3 py-2 text-sm font-semibold text-white"
+                        on:click=move |_| add_open.set(true)
+                        class="flex items-center gap-1.5 rounded-lg bg-blue-700 px-3 py-2 text-sm font-semibold text-white transition-all duration-200 hover:bg-blue-800 hover:shadow-md active:scale-[0.98]"
                     >
                         <Icon name="plus" class="h-4 w-4" />
-                        "Add New Guest"
+                        "Add Guest"
                     </button>
                 </div>
             </div>
 
             <div class="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-                <StatCard icon="users" label="Total Guests" value=Signal::derive(move || guests.get().len().to_string()) hint="All guest records" />
-                <StatCard icon="bed" label="Currently Staying" value=Signal::derive(move || in_house().to_string()) hint="In-house guests" accent="text-emerald-600 bg-emerald-50" />
-                <StatCard icon="calendar-check" label="Arriving Today" value=Signal::derive(move || arriving().to_string()) hint="Expected check-ins" accent="text-blue-600 bg-blue-50" />
-                <StatCard icon="calendar-x" label="Checking Out Today" value=Signal::derive(move || checking_out().to_string()) hint="Expected departures" accent="text-amber-600 bg-amber-50" />
-                <StatCard icon="star" label="VIP Guests" value=Signal::derive(move || vip().to_string()) hint="Priority guests" accent="text-purple-600 bg-purple-50" />
+                <StatCard icon="users" label="Total Guests" value=Signal::derive(move || metric(|m| m.total_guests)) hint="All guest records" />
+                <StatCard icon="bed" label="Currently Staying" value=Signal::derive(move || metric(|m| m.currently_staying)) hint="In-house guests" accent="text-emerald-600 bg-emerald-50" />
+                <StatCard icon="calendar-check" label="Arriving Today" value=Signal::derive(move || metric(|m| m.arriving_today)) hint="Expected check-ins" accent="text-blue-600 bg-blue-50" />
+                <StatCard icon="calendar-x" label="Checking Out Today" value=Signal::derive(move || metric(|m| m.checking_out_today)) hint="Expected departures" accent="text-amber-600 bg-amber-50" />
+                <StatCard icon="star" label="VIP Guests" value=Signal::derive(move || metric(|m| m.vip_guests)) hint="Priority guests" accent="text-purple-600 bg-purple-50" />
             </div>
 
             <div class="mb-4 flex flex-wrap gap-2 text-sm">
-                {["All", "In House", "Arriving Today", "Checking Out", "VIP"].iter().map(|f| {
+                {TABS.iter().map(|f| {
                     let f = *f;
-                    let n = move || match f {
-                        "In House" => in_house(),
-                        "Arriving Today" => arriving(),
-                        "Checking Out" => checking_out(),
-                        "VIP" => vip(),
-                        _ => guests.get().len(),
-                    };
                     view! {
                         <button
                             class=move || format!(
@@ -96,27 +114,21 @@ pub fn GuestsPage() -> impl IntoView {
                             )
                             on:click=move |_| filter.set(f)
                         >
-                            {move || format!("{f} ({})", n())}
+                            {f}
                         </button>
                     }
                 }).collect_view()}
             </div>
 
-            <div class="mb-4 flex flex-wrap items-center gap-3">
-                <div class="relative flex-1">
-                    <Icon name="search" class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                    <input
-                        type="text"
-                        placeholder="Search by guest name, booking ref, phone or email"
-                        class="w-full rounded-lg border border-slate-300 py-2 pl-9 pr-3 text-sm"
-                        prop:value=search
-                        on:input:target=move |ev| search.set(ev.target().value())
-                    />
-                </div>
-                <button class="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm transition-colors hover:bg-slate-50">
-                    <Icon name="sliders" class="h-4 w-4" />
-                    "Filters"
-                </button>
+            <div class="mb-4 relative">
+                <Icon name="search" class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                    type="text"
+                    placeholder="Search by guest name, booking ref, passport, phone or email"
+                    class="w-full rounded-lg border border-slate-300 py-2 pl-9 pr-3 text-sm"
+                    prop:value=search
+                    on:input:target=move |ev| search.set(ev.target().value())
+                />
             </div>
 
             <div class="overflow-x-auto rounded-xl border border-slate-200 bg-white">
@@ -134,187 +146,240 @@ pub fn GuestsPage() -> impl IntoView {
                         </tr>
                     </thead>
                     <tbody>
-                        {move || visible_guests().into_iter().map(|g| view! {
-                            <tr class="border-b border-slate-100 transition-colors duration-150 last:border-0 hover:bg-slate-50">
-                                <td class="px-4 py-3">
-                                    <div class="flex items-center gap-2">
-                                        <span class="flex h-8 w-8 items-center justify-center rounded-full bg-blue-100 text-xs font-semibold text-blue-700">{g.initials}</span>
-                                        <div>
-                                            <p class="font-medium text-slate-900">{g.name}</p>
-                                            <p class="text-xs text-slate-400">{g.nationality}</p>
-                                            <Show when=move || g.vip>
-                                                <span class="mt-0.5 inline-block rounded-full bg-purple-100 px-1.5 py-0.5 text-[10px] font-semibold text-purple-700">"VIP Guest"</span>
-                                            </Show>
-                                        </div>
-                                    </div>
-                                </td>
-                                <td class="px-4 py-3 text-blue-700">{g.booking_ref}</td>
-                                <td class="px-4 py-3">{g.room}<br/><span class="text-xs text-slate-400">{g.room_type}</span></td>
-                                <td class="px-4 py-3">{g.stay_dates}<br/><span class="text-xs text-slate-400">{g.nights}</span></td>
-                                <td class="px-4 py-3 text-slate-500">{g.contact}</td>
-                                <td class="px-4 py-3">{g.guests}</td>
-                                <td class="px-4 py-3"><span class=format!("rounded-full px-2 py-0.5 text-xs font-semibold {}", status_pill(g.status))>{g.status}</span></td>
-                                <td class="px-4 py-3">
-                                    <div class="flex items-center gap-2 text-slate-400">
-                                        <A href=format!("/guests/{}", g.booking_ref) attr:class="hover:text-slate-700"><Icon name="eye" class="h-4 w-4" /></A>
-                                        <button class="hover:text-slate-700"><Icon name="message" class="h-4 w-4" /></button>
-                                        <A href=format!("/guests/{}", g.booking_ref) attr:class="hover:text-slate-700"><Icon name="edit" class="h-4 w-4" /></A>
-                                        <button class="hover:text-slate-700"><Icon name="more-v" class="h-4 w-4" /></button>
-                                    </div>
-                                </td>
-                            </tr>
-                        }).collect_view()}
+                        <Suspense fallback=|| view! {
+                            <tr><td colspan="8" class="px-4 py-10 text-center text-sm text-slate-400">"Loading guests…"</td></tr>
+                        }>
+                            {move || Suspend::new(async move {
+                                match guests.await {
+                                    Err(e) => view! {
+                                        <tr><td colspan="8" class="px-4 py-10 text-center text-sm text-red-600">{e.detail()}</td></tr>
+                                    }.into_any(),
+                                    Ok(page) if page.items.is_empty() => view! {
+                                        <tr><td colspan="8" class="px-4 py-10 text-center text-sm text-slate-500">"No guests in this view yet. Guests appear here once bookings are made."</td></tr>
+                                    }.into_any(),
+                                    Ok(page) => page.items.into_iter().map(|g| {
+                                        let vip = g.is_vip;
+                                        let id = g.id;
+                                        let has_booking = !g.booking_ref.is_empty();
+                                        let href = if has_booking {
+                                            format!("/guests/{}", g.booking_ref)
+                                        } else {
+                                            format!("/guests/id-{id}")
+                                        };
+                                        view! {
+                                            <tr class="border-b border-slate-100 transition-colors duration-150 last:border-0 hover:bg-slate-50">
+                                                <td class="px-4 py-3">
+                                                    <div class="flex items-center gap-2">
+                                                        <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-semibold text-blue-700">{g.initials.clone()}</span>
+                                                        <div class="min-w-0">
+                                                            <p class="truncate font-medium text-slate-900">{g.display_name.clone()}</p>
+                                                            <p class="text-xs text-slate-400">{g.nationality_str().to_string()}</p>
+                                                            <Show when=move || vip>
+                                                                <span class="mt-0.5 inline-block rounded-full bg-purple-100 px-1.5 py-0.5 text-[10px] font-semibold text-purple-700">"VIP Guest"</span>
+                                                            </Show>
+                                                        </div>
+                                                    </div>
+                                                </td>
+                                                <td class="px-4 py-3 text-blue-700">
+                                                    {if has_booking { g.booking_ref.clone() } else { "—".into() }}
+                                                </td>
+                                                <td class="px-4 py-3">
+                                                    {if g.room_number.is_empty() { "—".to_string() } else { g.room_number.clone() }}
+                                                    <br/><span class="text-xs text-slate-400">{g.room_type.clone()}</span>
+                                                </td>
+                                                <td class="px-4 py-3">
+                                                    {if g.stay_dates.is_empty() { "—".to_string() } else { g.stay_dates.clone() }}
+                                                    <br/><span class="text-xs text-slate-400">
+                                                        {if g.nights > 0 { format!("{} nights", g.nights) } else { String::new() }}
+                                                    </span>
+                                                </td>
+                                                <td class="px-4 py-3 text-slate-500">
+                                                    {g.display_phone.clone()}
+                                                    <br/><span class="text-xs text-slate-400">{g.display_email.clone()}</span>
+                                                </td>
+                                                <td class="px-4 py-3 tabular-nums">{g.guests_count}</td>
+                                                <td class="px-4 py-3">
+                                                    <span class=format!("rounded-full px-2 py-0.5 text-xs font-semibold {}", status_pill(&g.stay_status))>
+                                                        {if g.stay_status.is_empty() { "—".to_string() } else { g.stay_status.clone() }}
+                                                    </span>
+                                                </td>
+                                                <td class="px-4 py-3">
+                                                    <div class="flex items-center gap-2 text-slate-400">
+                                                        <A href=href attr:class="hover:text-slate-700" attr:title="Open profile">
+                                                            <Icon name="eye" class="h-4 w-4" />
+                                                        </A>
+                                                        <button
+                                                            title=if vip { "Remove VIP" } else { "Mark as VIP" }
+                                                            class=if vip { "text-purple-600 hover:text-purple-800" } else { "hover:text-purple-600" }
+                                                            on:click=move |_| toggle_vip(id, !vip)
+                                                        >
+                                                            <Icon name="star" class="h-4 w-4" />
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        }
+                                    }).collect_view().into_any(),
+                                }
+                            })}
+                        </Suspense>
                     </tbody>
                 </table>
-
-                <Show when=move || visible_guests().is_empty()>
-                    <div class="p-10 text-center text-sm text-slate-500">"No guests match your search."</div>
-                </Show>
-            </div>
-            <p class="mt-3 text-sm text-slate-500">{move || format!("Showing {} of {} guests", visible_guests().len(), guests.get().len())}</p>
-
-            <div class="mt-6 rounded-xl border border-slate-200 bg-white p-5">
-                <h2 class="mb-3 text-base font-semibold text-slate-900">"Quick Actions"</h2>
-                <div class="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
-                    <button on:click=move |_| modal_open.set(true) class="flex items-start gap-2 rounded-lg border border-slate-200 p-3 text-left transition-colors hover:bg-slate-50">
-                        <Icon name="user-plus" class="mt-0.5 h-4 w-4 text-slate-500" />
-                        <span><span class="block font-medium text-slate-800">"Add Walk-in Guest"</span><span class="text-xs text-slate-400">"Create a guest record instantly"</span></span>
-                    </button>
-                    <button class="flex items-start gap-2 rounded-lg border border-slate-200 p-3 text-left hover:bg-slate-50">
-                        <Icon name="message" class="mt-0.5 h-4 w-4 text-slate-500" />
-                        <span><span class="block font-medium text-slate-800">"Send Message"</span><span class="text-xs text-slate-400">"Message a guest directly"</span></span>
-                    </button>
-                    <A href="/reservations" attr:class="flex items-start gap-2 rounded-lg border border-slate-200 p-3 hover:bg-slate-50">
-                        <Icon name="calendar-check" class="mt-0.5 h-4 w-4 text-slate-500" />
-                        <span><span class="block font-medium text-slate-800">"View Reservations"</span><span class="text-xs text-slate-400">"Open related bookings"</span></span>
-                    </A>
-                    <button class="flex items-start gap-2 rounded-lg border border-slate-200 p-3 text-left hover:bg-slate-50">
-                        <Icon name="clock" class="mt-0.5 h-4 w-4 text-slate-500" />
-                        <span><span class="block font-medium text-slate-800">"Guest History"</span><span class="text-xs text-slate-400">"Review previous stays"</span></span>
-                    </button>
-                </div>
             </div>
 
-            <Show when=move || modal_open.get()>
+            <Show when=move || add_open.get()>
                 <AddGuestModal
-                    on_close=move || modal_open.set(false)
-                    on_create=move |guest| guests.update(|g| g.insert(0, guest))
+                    on_close=move || add_open.set(false)
+                    on_created=move || {
+                        toast.success("Guest added", "The record is now in your guest list.");
+                        refresh.update(|n| *n += 1);
+                    }
                 />
             </Show>
         </div>
     }
 }
 
+/// Walk-in / phone guest entry. `POST /guests/` requires nothing, but a name is
+/// the least that makes the record useful.
 #[component]
 fn AddGuestModal(
     on_close: impl Fn() + Copy + Send + Sync + 'static,
-    on_create: impl Fn(Guest) + Copy + Send + Sync + 'static,
+    on_created: impl Fn() + Copy + Send + Sync + 'static,
 ) -> impl IntoView {
     let name = RwSignal::new(String::new());
-    let nationality = RwSignal::new(String::new());
+    let email = RwSignal::new(String::new());
     let phone = RwSignal::new(String::new());
-    let room = RwSignal::new(String::new());
-    let room_type = RwSignal::new(String::new());
-    let party_size = RwSignal::new("1".to_string());
+    let passport = RwSignal::new(String::new());
+    let nationality = RwSignal::new(String::new());
+    let company = RwSignal::new(String::new());
+    let language = RwSignal::new(String::new());
+    let address = RwSignal::new(String::new());
     let vip = RwSignal::new(false);
+    let notes = RwSignal::new(String::new());
+    let prefs = RwSignal::new(String::new());
     let error = RwSignal::new(Option::<String>::None);
+    let busy = RwSignal::new(false);
 
-    let on_submit = move |ev: leptos::ev::SubmitEvent| {
+    let submit = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default();
-        if name.get().trim().is_empty() || phone.get().trim().is_empty() {
-            error.set(Some("Please enter the guest's name and phone number.".to_string()));
+        if busy.get() {
             return;
         }
-        let guest = Guest {
-            initials: Box::leak(initials_of(&name.get()).into_boxed_str()),
-            name: Box::leak(name.get().into_boxed_str()),
-            nationality: Box::leak(
-                (if nationality.get().trim().is_empty() { "Ethiopian".to_string() } else { nationality.get() }).into_boxed_str(),
-            ),
-            booking_ref: Box::leak(format!("HA-2502{}", NEXT_GUEST_REF.fetch_add(1, Ordering::Relaxed)).into_boxed_str()),
-            room: Box::leak((if room.get().trim().is_empty() { "—".to_string() } else { room.get() }).into_boxed_str()),
-            room_type: Box::leak((if room_type.get().trim().is_empty() { "Unassigned".to_string() } else { room_type.get() }).into_boxed_str()),
-            stay_dates: "Today",
-            nights: "New",
-            contact: Box::leak(phone.get().into_boxed_str()),
-            guests: Box::leak(format!("{} Guest{}", party_size.get(), if party_size.get() == "1" { "" } else { "s" }).into_boxed_str()),
-            status: "Arriving Today",
-            vip: vip.get(),
-            id_passport: "—",
-            date_of_birth: "—",
-            preferred_language: "English",
-            address: "—",
-            member_since: "New guest",
-            company: "—",
-            notes: "—",
-            check_in_date: "Today",
-            check_out_date: "—",
-            payment_method: "—",
-            special_notes: "—",
-            total_stays: 1,
-            total_nights: 0,
+        if name.get().trim().is_empty() {
+            error.set(Some("Please enter the guest's name.".into()));
+            return;
+        }
+        error.set(None);
+        busy.set(true);
+
+        let payload = api::GuestProfile {
+            full_name: name.get().trim().to_string(),
+            email: non_empty(email.get()),
+            phone: non_empty(phone.get()),
+            id_or_passport_number: non_empty(passport.get()),
+            nationality: non_empty(nationality.get()),
+            preferred_language: non_empty(language.get()),
+            address: non_empty(address.get()),
+            company: non_empty(company.get()),
+            internal_notes: non_empty(notes.get()),
+            special_preferences: non_empty(prefs.get()),
+            is_vip: vip.get(),
+            ..Default::default()
         };
-        on_create(guest);
-        on_close();
+
+        wasm_bindgen_futures::spawn_local(async move {
+            match api::create_guest(&payload).await {
+                Ok(_) => {
+                    busy.set(false);
+                    on_created();
+                    on_close();
+                }
+                Err(e) => {
+                    error.set(Some(e.detail()));
+                    busy.set(false);
+                }
+            }
+        });
     };
 
     view! {
-        <Modal title="Add New Guest" on_close=on_close>
-            <form on:submit=on_submit class="flex flex-col gap-4">
+        <Modal title="Add Guest" on_close=on_close>
+            <form on:submit=submit class="flex flex-col gap-4">
                 <Show when=move || error.get().is_some()>
-                    <div class="flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
-                        <Icon name="info" class="h-4 w-4 shrink-0" />
+                    <div class="flex items-start gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+                        <Icon name="info" class="mt-0.5 h-4 w-4 shrink-0" />
                         {move || error.get().unwrap_or_default()}
                     </div>
                 </Show>
 
-                <div>
-                    <label class="mb-1 block text-xs font-medium text-slate-500">"Full Name"</label>
-                    <input type="text" placeholder="e.g. Sara Getachew" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                        prop:value=name on:input:target=move |ev| name.set(ev.target().value()) />
-                </div>
+                <Field label="Full name" value=name placeholder="e.g. Marta Bekele" />
 
                 <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <label class="mb-1 block text-xs font-medium text-slate-500">"Nationality"</label>
-                        <input type="text" placeholder="Ethiopian" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                            prop:value=nationality on:input:target=move |ev| nationality.set(ev.target().value()) />
-                    </div>
-                    <div>
-                        <label class="mb-1 block text-xs font-medium text-slate-500">"Phone Number"</label>
-                        <input type="text" placeholder="+251 91 234 5678" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                            prop:value=phone on:input:target=move |ev| phone.set(ev.target().value()) />
-                    </div>
+                    <Field label="Email" value=email kind="email" />
+                    <Field label="Phone" value=phone kind="tel" />
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <Field label="ID / passport" value=passport />
+                    <Field label="Nationality" value=nationality placeholder="e.g. Ethiopian" />
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <Field label="Company" value=company />
+                    <Field label="Preferred language" value=language placeholder="e.g. English" />
+                </div>
+                <Field label="Address" value=address />
+
+                <div class="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2">
+                    <span class="flex items-center gap-2 text-sm text-slate-700">
+                        <Icon name="star" class="h-4 w-4 text-slate-400" />
+                        "VIP guest"
+                    </span>
+                    <input type="checkbox" class="h-4 w-4" prop:checked=vip
+                        on:change:target=move |ev| vip.set(ev.target().checked()) />
                 </div>
 
-                <div class="grid grid-cols-3 gap-4">
-                    <div>
-                        <label class="mb-1 block text-xs font-medium text-slate-500">"Room Number"</label>
-                        <input type="text" placeholder="e.g. 301" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                            prop:value=room on:input:target=move |ev| room.set(ev.target().value()) />
-                    </div>
-                    <div>
-                        <label class="mb-1 block text-xs font-medium text-slate-500">"Room Type"</label>
-                        <input type="text" placeholder="e.g. Deluxe Room" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                            prop:value=room_type on:input:target=move |ev| room_type.set(ev.target().value()) />
-                    </div>
-                    <div>
-                        <label class="mb-1 block text-xs font-medium text-slate-500">"Guests"</label>
-                        <input type="number" min="1" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                            prop:value=party_size on:input:target=move |ev| party_size.set(ev.target().value()) />
-                    </div>
+                <div>
+                    <label class="mb-1 block text-xs font-medium text-slate-500">"Internal notes"</label>
+                    <textarea rows="2" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                        prop:value=notes on:input:target=move |ev| notes.set(ev.target().value())></textarea>
+                </div>
+                <div>
+                    <label class="mb-1 block text-xs font-medium text-slate-500">"Stay preferences"</label>
+                    <textarea rows="2" placeholder="High floor, quiet room, late breakfast…"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                        prop:value=prefs on:input:target=move |ev| prefs.set(ev.target().value())></textarea>
                 </div>
 
-                <label class="flex items-center gap-2 text-sm text-slate-600">
-                    <input type="checkbox" prop:checked=vip on:change:target=move |ev| vip.set(ev.target().checked()) class="h-4 w-4 rounded border-slate-300 text-blue-600" />
-                    "Mark as VIP guest"
-                </label>
-
-                <div class="mt-2 flex justify-end gap-3 border-t border-slate-100 pt-4">
+                <div class="mt-1 flex justify-end gap-3 border-t border-slate-100 pt-4">
                     <button type="button" class="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium" on:click=move |_| on_close()>"Cancel"</button>
-                    <button type="submit" class="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white transition-all duration-200 hover:bg-blue-800 hover:shadow-md active:scale-[0.98]">"Add Guest"</button>
+                    <button type="submit" disabled=move || busy.get()
+                        class="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white transition-all duration-200 hover:bg-blue-800 hover:shadow-md active:scale-[0.98] disabled:opacity-60">
+                        {move || if busy.get() { "Saving…" } else { "Add Guest" }}
+                    </button>
                 </div>
             </form>
         </Modal>
     }
+}
+
+#[component]
+fn Field(
+    label: &'static str,
+    value: RwSignal<String>,
+    #[prop(default = "text")] kind: &'static str,
+    #[prop(default = "")] placeholder: &'static str,
+) -> impl IntoView {
+    view! {
+        <div>
+            <label class="mb-1 block text-xs font-medium text-slate-500">{label}</label>
+            <input type=kind placeholder=placeholder class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                prop:value=value on:input:target=move |ev| value.set(ev.target().value()) />
+        </div>
+    }
+}
+
+/// Blank inputs are dropped rather than sent as `""`, which the API would store.
+fn non_empty(s: String) -> Option<String> {
+    let t = s.trim();
+    (!t.is_empty()).then(|| t.to_string())
 }
