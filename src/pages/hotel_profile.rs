@@ -564,6 +564,48 @@ fn AmenitiesTab() -> impl IntoView {
         let _ = refresh.get();
         async move { api::list_amenities().await }
     });
+    // Which of the catalogue this property actually offers. This is the set the
+    // public listing shows — `/amenities/` alone is just the vocabulary.
+    let active = LocalResource::new(move || {
+        let _ = refresh.get();
+        async move { api::list_org_amenities().await }
+    });
+    let picked = RwSignal::new(Vec::<i64>::new());
+    let seeded = RwSignal::new(false);
+    let saving = RwSignal::new(false);
+
+    Effect::new(move |_| {
+        if seeded.get() {
+            return;
+        }
+        if let Some(Ok(rows)) = active.get().map(|r| r.map(|x| x.clone())) {
+            picked.set(
+                rows.iter()
+                    .filter(|r| r.is_active)
+                    .map(|r| r.amenity.id)
+                    .collect(),
+            );
+            seeded.set(true);
+        }
+    });
+
+    let save = move |_| {
+        if saving.get() {
+            return;
+        }
+        saving.set(true);
+        let ids = picked.get();
+        wasm_bindgen_futures::spawn_local(async move {
+            match api::sync_org_amenities(&ids).await {
+                Ok(()) => toast.success(
+                    "Amenities updated",
+                    "These now appear on your public listing.",
+                ),
+                Err(e) => toast.error("Could not save the amenities", e.detail()),
+            }
+            saving.set(false);
+        });
+    };
 
     let new_name = RwSignal::new(String::new());
     let new_category = RwSignal::new(api::AMENITY_CATEGORIES[0].to_string());
@@ -595,7 +637,22 @@ fn AmenitiesTab() -> impl IntoView {
 
     view! {
         <div class="grid animate-fade-up gap-5 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
-            <Card title="Amenity catalogue" hint="Available to assign on each room">
+            <Card
+                title="What this property offers"
+                hint=Signal::derive(move || format!(
+                    "{} selected · shown on your public listing",
+                    picked.get().len(),
+                ))
+                action=Box::new(move || view! {
+                    <button
+                        on:click=save
+                        disabled=move || saving.get()
+                        class="rounded-lg bg-blue-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-60"
+                    >
+                        {move || if saving.get() { "Saving…" } else { "Save selection" }}
+                    </button>
+                }.into_any())
+            >
                 <Suspense fallback=|| view! {
                     <p class="py-8 text-center text-sm text-slate-400">"Loading catalogue…"</p>
                 }>
@@ -611,7 +668,7 @@ fn AmenitiesTab() -> impl IntoView {
                                 <EmptyState
                                     icon="sparkles"
                                     title="Nothing in the catalogue"
-                                    body="Add the facilities your property offers — Wi-Fi, air conditioning, parking — and they become selectable on every room."
+                                    body="Add the facilities your property offers — Wi-Fi, air conditioning, parking — then select the ones this hotel provides."
                                 />
                             }.into_any();
                         }
@@ -632,10 +689,30 @@ fn AmenitiesTab() -> impl IntoView {
                                             {format!("{cat} · {}", items.len())}
                                         </p>
                                         <div class="flex flex-wrap gap-1.5">
-                                            {items.into_iter().map(|a| view! {
-                                                <span class="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
-                                                    {a.name}
-                                                </span>
+                                            {items.into_iter().map(|a| {
+                                                let id = a.id;
+                                                view! {
+                                                    <button
+                                                        type="button"
+                                                        on:click=move |_| picked.update(|p| match p.iter().position(|x| *x == id) {
+                                                            Some(i) => { p.remove(i); }
+                                                            None => p.push(id),
+                                                        })
+                                                        class=move || format!(
+                                                            "flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors {}",
+                                                            if picked.get().contains(&id) {
+                                                                "border-blue-600 bg-blue-50 text-blue-700"
+                                                            } else {
+                                                                "border-slate-200 bg-slate-50 text-slate-600 hover:bg-white"
+                                                            }
+                                                        )
+                                                    >
+                                                        <Show when=move || picked.get().contains(&id)>
+                                                            <Icon name="check" class="h-3 w-3" />
+                                                        </Show>
+                                                        {a.name.clone()}
+                                                    </button>
+                                                }
                                             }).collect_view()}
                                         </div>
                                     </div>
@@ -667,7 +744,7 @@ fn AmenitiesTab() -> impl IntoView {
                         {move || if busy.get() { "Adding…" } else { "Add amenity" }}
                     </button>
                     <p class="text-2xs text-slate-500">
-                        "Amenities created here belong to your property. Assign them to individual rooms from the room detail page."
+                        "Creating an amenity only adds it to the vocabulary. Tick it on the left and save to advertise it on your listing, and assign it to individual rooms from the room detail page."
                     </p>
                 </div>
             </Card>

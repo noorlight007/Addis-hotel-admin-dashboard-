@@ -1518,6 +1518,38 @@ pub async fn list_amenities() -> ApiResult<Vec<Amenity>> {
     request_list("/amenities/", &Vec::new()).await
 }
 
+/// One row of `GET /amenities/organization/` — the amenity plus whether the
+/// property currently offers it.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+pub struct OrgAmenity {
+    #[serde(default)]
+    pub amenity: Amenity,
+    #[serde(default)]
+    pub is_active: bool,
+}
+
+/// The amenities this hotel actually offers, as opposed to the whole catalogue.
+///
+/// This is what the public listing shows: `organization.amenities` on
+/// `/organizations/public/{id}/` is populated from here, not from `/amenities/`.
+pub async fn list_org_amenities() -> ApiResult<Vec<OrgAmenity>> {
+    request_list("/amenities/organization/", &Vec::new()).await
+}
+
+/// Replaces the property's active amenity set. Ids in the list are switched on;
+/// everything else is switched off.
+pub async fn sync_org_amenities(amenity_ids: &[i64]) -> ApiResult<()> {
+    let body = serde_json::json!({ "amenity_ids": amenity_ids });
+    request_value(
+        Method::Post,
+        "/amenities/organization/sync/",
+        Some(body),
+        Auth::Required,
+    )
+    .await?;
+    Ok(())
+}
+
 /// Creates a hotel-specific amenity. The endpoint is multipart because it also
 /// accepts an icon upload.
 pub async fn create_amenity(name: &str, category: &str) -> ApiResult<Amenity> {
